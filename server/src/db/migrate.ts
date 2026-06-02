@@ -3,7 +3,7 @@ import dotenv from 'dotenv'
 
 dotenv.config()
 
-async function migrate(): Promise<void> {
+export async function migrate(): Promise<void> {
   const client = await pool.connect()
 
   try {
@@ -157,7 +157,7 @@ async function migrate(): Promise<void> {
     `)
     console.log('✅ updated_at trigger ready')
 
-    // Add performance indexes on frequently queried columns
+    // Performance indexes
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_orders_table_id ON orders(table_id);
       CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
@@ -177,11 +177,20 @@ async function migrate(): Promise<void> {
     throw err
   } finally {
     client.release()
-    await pool.end()
+    // ✅ DO NOT call pool.end() here — pool is shared with the server
   }
 }
 
-migrate().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+// Only run directly when called as: ts-node src/db/migrate.ts
+if (require.main === module) {
+  migrate()
+    .then(() => {
+      pool.end()       // safe to close only when running standalone
+      process.exit(0)
+    })
+    .catch((err) => {
+      console.error(err)
+      pool.end()
+      process.exit(1)
+    })
+}

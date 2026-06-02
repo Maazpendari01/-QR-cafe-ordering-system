@@ -124,13 +124,24 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 })
 
 // ── Start ─────────────────────────────────────────────────────
+import { migrate } from './db/migrate'   // ← ADD THIS IMPORT
 import { seedMenu } from './routes/menu'
 
 async function startServer(): Promise<void> {
   try {
+    // 1. Verify connection
     await pool.query('SELECT 1')
     console.log('✅ Database connection verified')
+
+    // 2. Create tables (safe: uses IF NOT EXISTS)
+    await migrate()
+    console.log('✅ Migrations complete')
+
+    // 3. Seed menu data (tables now exist)
     await seedMenu()
+    console.log('✅ Menu seeded')
+
+    // 4. Start listening
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`\n🚀 Cafe backend running!`)
       console.log(`   Local:  http://localhost:${PORT}`)

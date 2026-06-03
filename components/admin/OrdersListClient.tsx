@@ -22,7 +22,7 @@ const STATUS_LABELS: Record<OrderStatus, string> = {
   needs_attention: 'Needs Attention',
 }
 
-export default function OrderHistoryClient() {
+export default function OrderListClient() {
   const router = useRouter()
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
@@ -113,7 +113,7 @@ export default function OrderHistoryClient() {
             fontWeight: 400,
             margin: 0,
           }}>
-            📋 Order History
+            📋 Order List
           </h1>
           <span style={{ fontSize: 12, color: '#6b5c47' }}>
             {orders.length} orders

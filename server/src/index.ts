@@ -34,12 +34,13 @@ app.use(cors({
       process.env.FRONTEND_URL || 'http://localhost:3000',
       'http://localhost:3000',
       'http://localhost:3001',
+      'https://qr-cafe-ordering-system-ph6u.vercel.app',
     ]
     if (allowed.includes(origin)) return callback(null, true)
-    if (
-      process.env.NODE_ENV === 'development' &&
-      /^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin)
-    ) return callback(null, true)
+    // allow all vercel preview deployments
+    if (/\.vercel\.app$/.test(origin)) return callback(null, true)
+    // allow local network IPs
+    if (/^http:\/\/192\.168\.\d+\.\d+(:\d+)?$/.test(origin)) return callback(null, true)
     callback(new Error(`CORS blocked: ${origin}`))
   },
   credentials: true,
@@ -124,7 +125,7 @@ app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
 })
 
 // ── Start ─────────────────────────────────────────────────────
-import { migrate } from './db/migrate'   // ← ADD THIS IMPORT
+import { migrate } from './db/migrate'
 import { seedMenu } from './routes/menu'
 
 async function startServer(): Promise<void> {

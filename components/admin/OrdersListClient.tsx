@@ -129,7 +129,6 @@ export default function OrderListClient() {
               style={{
                 padding: '8px 16px',
                 borderRadius: 100,
-                border: 'none',
                 fontSize: 12,
                 fontWeight: 500,
                 cursor: 'pointer',

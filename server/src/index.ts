@@ -34,7 +34,7 @@ app.use(cors({
       process.env.FRONTEND_URL || 'http://localhost:3000',
       'http://localhost:3000',
       'http://localhost:3001',
-      'https://qr-cafe-ordering-system-ph6u.vercel.app',
+      'https://qr-cafe-ordering-system.vercel.app',
     ]
     if (allowed.includes(origin)) return callback(null, true)
     // allow all vercel preview deployments

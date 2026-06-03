@@ -6,7 +6,7 @@ interface Props {
 }
 
 export default async function MenuPage({ params }: Props) {
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000'
+  const API_URL = process.env.API_URL || process.env.NEXT_PUBLIC_API_URL || 'https://cafe-qr-backend-bhby.onrender.com'
 
   // Fetch table
   const tableRes = await fetch(`${API_URL}/api/tables/${params.tableId}`, {
@@ -36,9 +36,9 @@ export default async function MenuPage({ params }: Props) {
 
   return (
     <MenuWrapper
-    table={table}
-    categories={menuCategories}
-    menuItems={menuItems}
-  />
-)
+      table={table}
+      categories={menuCategories}
+      menuItems={menuItems}
+    />
+  )
 }

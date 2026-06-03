@@ -11,6 +11,7 @@ const STATUS_COLORS: Record<OrderStatus, string> = {
   preparing: '#3b82f6',
   ready: '#22c55e',
   served: '#6b5c47',
+  needs_attention: '#ef4444',
 }
 
 const STATUS_LABELS: Record<OrderStatus, string> = {
@@ -18,6 +19,7 @@ const STATUS_LABELS: Record<OrderStatus, string> = {
   preparing: 'Preparing',
   ready: 'Ready',
   served: 'Served',
+  needs_attention: 'Needs Attention',
 }
 
 export default function OrderHistoryClient() {
@@ -35,15 +37,15 @@ export default function OrderHistoryClient() {
     try {
       setLoading(true)
       const token = localStorage.getItem('cafe_admin_token')
-      const url = filter === 'all' 
-        ? `${API_URL}/api/orders` 
+      const url = filter === 'all'
+        ? `${API_URL}/api/orders`
         : `${API_URL}/api/orders?status=${filter}`
-      
+
       const res = await fetch(url, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
       const data = await res.json()
-      
+
       if (data.success) {
         setOrders(data.data || [])
       } else {
@@ -120,7 +122,7 @@ export default function OrderHistoryClient() {
 
         {/* Filters */}
         <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 4 }}>
-          {['all', 'pending', 'preparing', 'ready', 'served'].map((status) => (
+          {(['all', 'pending', 'preparing', 'ready', 'served', 'needs_attention'] as const).map((status) => (
             <button
               key={status}
               onClick={() => setFilter(status)}
@@ -132,11 +134,17 @@ export default function OrderHistoryClient() {
                 fontWeight: 500,
                 cursor: 'pointer',
                 whiteSpace: 'nowrap',
-                background: filter === status 
-                  ? 'linear-gradient(135deg, #c8a96e, #e8c584)' 
+                background: filter === status
+                  ? status === 'needs_attention'
+                    ? 'linear-gradient(135deg, #ef4444, #f87171)'
+                    : 'linear-gradient(135deg, #c8a96e, #e8c584)'
                   : 'rgba(200,169,110,0.08)',
                 color: filter === status ? '#0e0b08' : 'rgba(240,235,227,0.6)',
-                border: filter === status ? 'none' : '1px solid rgba(200,169,110,0.1)',
+                border: filter === status
+                  ? 'none'
+                  : status === 'needs_attention'
+                    ? '1px solid rgba(239,68,68,0.2)'
+                    : '1px solid rgba(200,169,110,0.1)',
               }}
             >
               {status === 'all' ? 'All Orders' : STATUS_LABELS[status as OrderStatus]}
@@ -177,10 +185,13 @@ export default function OrderHistoryClient() {
             className="order-row"
             style={{
               background: '#1a1410',
-              border: '1px solid rgba(200,169,110,0.08)',
+              border: order.status === 'needs_attention'
+                ? '1px solid rgba(239,68,68,0.25)'
+                : '1px solid rgba(200,169,110,0.08)',
               borderRadius: 16,
               padding: '16px',
               animationDelay: `${index * 0.05}s`,
+              cursor: 'pointer',
             }}
             onClick={() => router.push(`/order/${order.id}`)}
           >
@@ -188,9 +199,9 @@ export default function OrderHistoryClient() {
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
               <div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                  <span style={{ 
-                    fontSize: 11, 
-                    fontWeight: 600, 
+                  <span style={{
+                    fontSize: 11,
+                    fontWeight: 600,
                     color: '#c8a96e',
                     letterSpacing: '0.05em',
                   }}>
@@ -213,17 +224,17 @@ export default function OrderHistoryClient() {
                 </p>
               </div>
               <div style={{ textAlign: 'right' }}>
-                <p style={{ 
-                  fontSize: 16, 
-                  fontWeight: 600, 
-                  color: '#f5f0e8', 
+                <p style={{
+                  fontSize: 16,
+                  fontWeight: 600,
+                  color: '#f5f0e8',
                   margin: '0 0 2px',
                   fontFamily: 'Georgia, serif',
                 }}>
                   {formatCurrency(order.total_amount)}
                 </p>
-                <span style={{ 
-                  fontSize: 10, 
+                <span style={{
+                  fontSize: 10,
                   color: order.payment_status === 'paid' ? '#22c55e' : '#f59e0b',
                 }}>
                   {order.payment_status === 'paid' ? '✓ Paid' : '◐ Pending'}
@@ -233,9 +244,9 @@ export default function OrderHistoryClient() {
 
             {/* Items preview */}
             {order.order_items && order.order_items.length > 0 && (
-              <div style={{ 
-                display: 'flex', 
-                gap: 8, 
+              <div style={{
+                display: 'flex',
+                gap: 8,
                 flexWrap: 'wrap',
                 paddingTop: 12,
                 borderTop: '1px solid rgba(200,169,110,0.06)',
@@ -270,16 +281,16 @@ export default function OrderHistoryClient() {
 
             {/* Table info */}
             {order.table_id && (
-              <div style={{ 
-                marginTop: 12, 
-                paddingTop: 12, 
+              <div style={{
+                marginTop: 12,
+                paddingTop: 12,
                 borderTop: '1px solid rgba(200,169,110,0.06)',
                 display: 'flex',
                 justifyContent: 'space-between',
                 fontSize: 11,
                 color: '#6b5c47',
               }}>
-                <span>Table: {order.table_id}</span>
+                <span>Table: {order.table_name || order.table_id}</span>
                 <span>{order.payment_method || 'N/A'}</span>
               </div>
             )}

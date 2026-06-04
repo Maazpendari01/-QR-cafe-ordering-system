@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 const API              = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:5000';
 const WAITER_PASSWORD  = 'waiter123';
+const REFRESH_INTERVAL = 30_000; // re-fetch every 30s as a safety net for missed SSE events
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -48,7 +49,6 @@ interface ReadyOrder {
   updated_at: string;
 }
 
-// ── NEW: orders still being prepared but with flagged items ──────────────────
 interface FlaggedActiveOrder {
   id: string;
   table_name: string;
@@ -94,7 +94,7 @@ function formatAmount(val: string | number): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AdjustmentBlock — reusable for both Attention and Ready sections
+// AdjustmentBlock
 // ─────────────────────────────────────────────────────────────────────────────
 
 function AdjustmentBlock({ adjustments }: { adjustments: OrderAdjustment[] }) {
@@ -150,7 +150,7 @@ function AdjustmentBlock({ adjustments }: { adjustments: OrderAdjustment[] }) {
 interface AttentionSectionProps {
   calls: WaiterCall[];
   readyOrders: ReadyOrder[];
-  flaggedActiveOrders: FlaggedActiveOrder[]; // ← NEW
+  flaggedActiveOrders: FlaggedActiveOrder[];
   onAcknowledge: (callId: string) => void;
 }
 
@@ -160,7 +160,6 @@ function AttentionSection({
   flaggedActiveOrders,
   onAcknowledge,
 }: AttentionSectionProps) {
-  // Adjustments on ready orders (price settlement when serving)
   const readyWithAdjustments = readyOrders.filter(
     (o) => o.adjustments && o.adjustments.length > 0
   );
@@ -178,8 +177,6 @@ function AttentionSection({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-
-      {/* Waiter calls */}
       {calls.map((call) => (
         <div
           key={call.id}
@@ -225,7 +222,6 @@ function AttentionSection({
         </div>
       ))}
 
-      {/* ── NEW: flagged items on still-preparing orders ───────────────────── */}
       {flaggedActiveOrders.map((order) => (
         <div
           key={order.id}
@@ -259,7 +255,6 @@ function AttentionSection({
         </div>
       ))}
 
-      {/* Adjustments on ready orders */}
       {readyWithAdjustments.map((order) => (
         <div
           key={order.id}
@@ -698,7 +693,7 @@ export default function WaiterClient() {
 
   const [calls,               setCalls]               = useState<WaiterCall[]>([]);
   const [readyOrders,         setReadyOrders]         = useState<ReadyOrder[]>([]);
-  const [flaggedActiveOrders, setFlaggedActiveOrders] = useState<FlaggedActiveOrder[]>([]); // ← NEW
+  const [flaggedActiveOrders, setFlaggedActiveOrders] = useState<FlaggedActiveOrder[]>([]);
   const [cashPending,         setCashPending]         = useState<CashOrder[]>([]);
   const [tables,              setTables]              = useState<TableStatus[]>([]);
   const [connected,           setConnected]           = useState(false);
@@ -709,26 +704,29 @@ export default function WaiterClient() {
   const retryRef   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryCount = useRef(0);
 
-  // ── Initial fetch ────────────────────────────────────────────────────────────
+  // ── Initial + periodic fetch ──────────────────────────────────────────────
   const fetchDashboard = useCallback(async () => {
     try {
       const res  = await fetch(`${API}/api/waiter/dashboard`);
       const json = await res.json();
-      if (!json.success) return;
+      if (!json.success) {
+        console.error('[waiter dashboard] API returned failure:', json);
+        return;
+      }
       const { calls, readyOrders, flaggedActiveOrders, cashPending, tables } = json.data;
       setCalls(calls ?? []);
       setReadyOrders(readyOrders ?? []);
-      setFlaggedActiveOrders(flaggedActiveOrders ?? []); // ← NEW
+      setFlaggedActiveOrders(flaggedActiveOrders ?? []);
       setCashPending(cashPending ?? []);
       setTables(tables ?? []);
     } catch (err) {
-      console.error('[waiter dashboard]', err);
+      console.error('[waiter dashboard fetch error]', err);
     } finally {
       setLoading(false);
     }
   }, []);
 
-  // ── SSE ──────────────────────────────────────────────────────────────────────
+  // ── SSE ───────────────────────────────────────────────────────────────────
   const connectSSE = useCallback(() => {
     esRef.current?.close();
     const es = new EventSource(`${API}/api/waiter/stream`);
@@ -773,12 +771,17 @@ export default function WaiterClient() {
       } catch { /* ignore */ }
     });
 
-    // ── item_flagged: re-fetch so flaggedActiveOrders updates ───────────────
-    es.addEventListener('item_flagged', (e) => {
-      try {
-        fetchDashboard();
-        setActiveTab('attention');
-      } catch { /* ignore */ }
+    // FIX: Handle payment_confirmed so online orders trigger a re-fetch
+    // when payment is verified (payments.ts now broadcasts this event).
+    // Without this handler, online orders that just got paid would not
+    // appear in the waiter's Cash/Ready tabs until the next periodic refresh.
+    es.addEventListener('payment_confirmed', () => {
+      fetchDashboard();
+    });
+
+    es.addEventListener('item_flagged', () => {
+      fetchDashboard();
+      setActiveTab('attention');
     });
 
     es.addEventListener('new_order', (e) => {
@@ -810,7 +813,7 @@ export default function WaiterClient() {
       try {
         const { id } = JSON.parse(e.data);
         setReadyOrders((prev) => prev.filter((o) => o.id !== id));
-        setFlaggedActiveOrders((prev) => prev.filter((o) => o.id !== id)); // ← NEW
+        setFlaggedActiveOrders((prev) => prev.filter((o) => o.id !== id));
       } catch { /* ignore */ }
     });
 
@@ -834,13 +837,21 @@ export default function WaiterClient() {
     if (!authenticated) return;
     fetchDashboard();
     connectSSE();
+
+    // FIX: Periodic re-fetch every 30s as a safety net.
+    // SSE delivers updates instantly, but if an event was missed (brief
+    // disconnect, tab in background, etc.) the waiter would be stuck
+    // showing stale data. This guarantees state catches up every 30s.
+    const refreshInterval = setInterval(fetchDashboard, REFRESH_INTERVAL);
+
     return () => {
       esRef.current?.close();
       if (retryRef.current) clearTimeout(retryRef.current);
+      clearInterval(refreshInterval);
     };
   }, [authenticated, connectSSE, fetchDashboard]);
 
-  // ── Handlers ──────────────────────────────────────────────────────────────────
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleAcknowledge = async (callId: string) => {
     setCalls((prev) => prev.filter((c) => c.id !== callId));
@@ -879,7 +890,7 @@ export default function WaiterClient() {
     }
   };
 
-  // ── Derived counts ────────────────────────────────────────────────────────────
+  // ── Derived counts ────────────────────────────────────────────────────────
 
   const readyWithAdjustments = readyOrders.filter(
     (o) => o.adjustments && o.adjustments.length > 0
@@ -888,7 +899,7 @@ export default function WaiterClient() {
   const readyCount     = readyOrders.length;
   const cashCount      = cashPending.length;
 
-  // ── Login screen ──────────────────────────────────────────────────────────────
+  // ── Login screen ──────────────────────────────────────────────────────────
 
   if (!authenticated) {
     return (
@@ -995,15 +1006,34 @@ export default function WaiterClient() {
             </h1>
             <p style={{ color: '#6b5c47', fontSize: '11px', margin: 0, letterSpacing: '0.1em' }}>WAITER</p>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span style={{
-              width: '7px', height: '7px', borderRadius: '50%',
-              background: connected ? '#22c55e' : '#f59e0b',
-              boxShadow: connected ? '0 0 5px rgba(34,197,94,0.5)' : 'none',
-            }} />
-            <span style={{ color: '#6b5c47', fontSize: '12px' }}>
-              {connected ? 'LIVE' : 'Connecting'}
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {/* Manual refresh button — tap to force re-fetch */}
+            <button
+              onClick={fetchDashboard}
+              title="Refresh"
+              style={{
+                background: 'transparent',
+                border: '1px solid rgba(200,169,110,0.15)',
+                borderRadius: '6px',
+                color: '#6b5c47',
+                fontSize: '14px',
+                padding: '4px 8px',
+                cursor: 'pointer',
+                lineHeight: 1,
+              }}
+            >
+              ↻
+            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span style={{
+                width: '7px', height: '7px', borderRadius: '50%',
+                background: connected ? '#22c55e' : '#f59e0b',
+                boxShadow: connected ? '0 0 5px rgba(34,197,94,0.5)' : 'none',
+              }} />
+              <span style={{ color: '#6b5c47', fontSize: '12px' }}>
+                {connected ? 'LIVE' : 'Connecting'}
+              </span>
+            </div>
           </div>
         </div>
 

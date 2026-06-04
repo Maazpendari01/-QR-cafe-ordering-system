@@ -46,18 +46,39 @@ router.get('/stream', (req: Request, res: Response) => {
 // GET /api/waiter/dashboard
 // ─────────────────────────────────────────────────────────────────────────────
 
-router.get('/dashboard', async (_req: Request, res: Response) => {
+// FIX: Each query runs independently so a missing table (e.g. order_item_changes,
+// waiter_calls) or any other DB error on one section does NOT wipe out all the
+// other sections. Previously a single failure caused success:false and the
+// entire waiter dashboard showed empty even when ready orders existed.
+async function safeQuery<T = Record<string, unknown>>(
+  label: string,
+  fn: () => Promise<{ rows: T[] }>
+): Promise<T[]> {
   try {
-    // 1. Pending waiter calls
-    const callsResult = await pool.query(`
+    const result = await fn();
+    return result.rows;
+  } catch (err) {
+    console.error(`[waiter dashboard – ${label} failed]`, err);
+    return [];
+  }
+}
+
+router.get('/dashboard', async (_req: Request, res: Response) => {
+  // 1. Pending waiter calls
+  const calls = await safeQuery('calls', () =>
+    pool.query(`
       SELECT id, table_id, table_name, order_id, status, created_at
       FROM   waiter_calls
       WHERE  status = 'pending'
       ORDER  BY created_at ASC
-    `);
+    `)
+  );
 
-    // 2. Ready orders (kitchen marked ready, not yet served by waiter)
-    const readyResult = await pool.query(`
+  // 2. Ready orders — try full query with adjustments first,
+  //    fall back to a simpler query without order_item_changes if that table
+  //    does not yet exist in the production database.
+  let readyOrders = await safeQuery('ready-orders-full', () =>
+    pool.query(`
       SELECT
         o.id,
         o.total_amount,
@@ -95,17 +116,55 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
           '[]'
         ) AS adjustments
       FROM   orders o
-      JOIN   tables t       ON t.id = o.table_id
+      JOIN   tables t         ON t.id = o.table_id
       LEFT JOIN order_items oi ON oi.order_id = o.id
       WHERE  o.status = 'ready'
       GROUP  BY o.id, t.name
       ORDER  BY o.updated_at ASC
-    `);
+    `)
+  );
 
-    // 3. ── NEW: flagged items on orders that are NOT yet ready ──────────────
-    // These are pending/preparing orders where kitchen flagged an item.
-    // They must show in the Attention tab even though the order isn't ready.
-    const flaggedActiveResult = await pool.query(`
+  // Fallback: if full query failed (order_item_changes missing), run without it
+  if (readyOrders.length === 0) {
+    const fallback = await safeQuery('ready-orders-fallback', () =>
+      pool.query(`
+        SELECT
+          o.id,
+          o.total_amount,
+          o.payment_method,
+          o.payment_status,
+          o.note,
+          o.updated_at,
+          t.name AS table_name,
+          COALESCE(
+            json_agg(
+              json_build_object(
+                'id',       oi.id,
+                'name',     oi.name,
+                'quantity', oi.quantity,
+                'price',    oi.price
+              ) ORDER BY oi.created_at
+            ) FILTER (WHERE oi.id IS NOT NULL),
+            '[]'
+          ) AS items,
+          '[]'::json AS adjustments
+        FROM   orders o
+        JOIN   tables t         ON t.id = o.table_id
+        LEFT JOIN order_items oi ON oi.order_id = o.id
+        WHERE  o.status = 'ready'
+        GROUP  BY o.id, t.name
+        ORDER  BY o.updated_at ASC
+      `)
+    );
+    // Only replace if we actually got rows (distinguishes "table missing" from "no ready orders")
+    if (fallback.length > 0) {
+      readyOrders = fallback;
+    }
+  }
+
+  // 3. Flagged items on orders that are NOT yet ready
+  const flaggedActiveOrders = await safeQuery('flagged-active', () =>
+    pool.query(`
       SELECT
         o.id,
         o.status,
@@ -139,10 +198,12 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
           WHERE oic.order_id = o.id AND oic.resolved = false
         )
       ORDER BY o.updated_at ASC
-    `);
+    `)
+  );
 
-    // 4. Cash orders pending collection
-    const cashResult = await pool.query(`
+  // 4. Cash orders pending collection
+  const cashPending = await safeQuery('cash-pending', () =>
+    pool.query(`
       SELECT
         o.id,
         o.total_amount,
@@ -154,10 +215,13 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
         AND  o.payment_status  = 'pending'
         AND  o.status NOT IN ('served')
       ORDER  BY o.created_at ASC
-    `);
+    `)
+  );
 
-    // 5. Table overview
-    const tablesResult = await pool.query(`
+  // 5. Table overview — try with has_adjustment, fall back without if
+  //    order_item_changes doesn't exist
+  let tables = await safeQuery('tables-full', () =>
+    pool.query(`
       SELECT
         t.id,
         t.name,
@@ -184,22 +248,42 @@ router.get('/dashboard', async (_req: Request, res: Response) => {
       FROM   tables t
       WHERE  t.is_active = true
       ORDER  BY t.name
-    `);
+    `)
+  );
 
-    res.json({
-      success: true,
-      data: {
-        calls:              callsResult.rows,
-        readyOrders:        readyResult.rows,
-        flaggedActiveOrders: flaggedActiveResult.rows, // ← NEW
-        cashPending:        cashResult.rows,
-        tables:             tablesResult.rows,
-      },
-    });
-  } catch (err) {
-    console.error('[waiter dashboard]', err);
-    res.status(500).json({ success: false, error: 'Failed to load dashboard' });
+  if (tables.length === 0) {
+    tables = await safeQuery('tables-fallback', () =>
+      pool.query(`
+        SELECT
+          t.id,
+          t.name,
+          (
+            SELECT o.status
+            FROM   orders o
+            WHERE  o.table_id = t.id
+              AND  o.status NOT IN ('served')
+            ORDER  BY o.created_at DESC
+            LIMIT  1
+          ) AS current_status,
+          false AS has_call,
+          false AS has_adjustment
+        FROM   tables t
+        WHERE  t.is_active = true
+        ORDER  BY t.name
+      `)
+    );
   }
+
+  res.json({
+    success: true,
+    data: {
+      calls,
+      readyOrders,
+      flaggedActiveOrders,
+      cashPending,
+      tables,
+    },
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,12 +311,16 @@ router.patch('/orders/:id/served', async (req: Request, res: Response) => {
     }
 
     if (adjustmentResolved) {
-      await pool.query(
-        `UPDATE order_item_changes
-         SET    resolved = true, resolved_at = NOW()
-         WHERE  order_id = $1 AND resolved = false`,
-        [id]
-      );
+      try {
+        await pool.query(
+          `UPDATE order_item_changes
+           SET    resolved = true, resolved_at = NOW()
+           WHERE  order_id = $1 AND resolved = false`,
+          [id]
+        );
+      } catch (err) {
+        console.error('[waiter served – adjustment resolve failed, continuing]', err);
+      }
     }
 
     await pool.query('COMMIT');

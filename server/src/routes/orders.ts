@@ -144,7 +144,7 @@ router.post(
       const safeDiscount   = Math.min(Number(discount_amount), subtotal)
       const total_amount   = Math.max(0, subtotal - safeDiscount)
       const payment_status = payment_method === 'cash' ? 'paid' : 'pending'
-      const safeNote       = note        ? sanitizeString(note)                    : null
+      const safeNote       = note        ? sanitizeString(note)                     : null
       const safeCouponCode = coupon_code ? sanitizeString(coupon_code).toUpperCase() : null
 
       await client.query('BEGIN')
@@ -198,11 +198,16 @@ router.post(
         })),
       }
 
-      // Notify kitchen board
-      broadcastToKitchens('new_order', broadcastPayload)
+      // ── FIX: Only send cash orders to kitchen immediately.
+      // Online orders reach the kitchen only after payment is
+      // confirmed in POST /api/payments/verify — this prevents
+      // unpaid orders from appearing on the kitchen display.
+      if (payment_method === 'cash') {
+        broadcastToKitchens('new_order', broadcastPayload)
+      }
 
-      // ── NEW: notify waiter screen so table grid updates immediately
-      // and cash orders appear in the Cash tab
+      // Always notify waiter screen so the table grid updates
+      // and cash orders appear in the Cash tab right away.
       broadcastToWaiter('new_order', broadcastPayload)
 
       res.status(201).json({
@@ -405,7 +410,7 @@ router.patch(
         if (status === 'served') {
           // Kitchen card removed
           broadcastToKitchens('order_served', { id: req.params.id })
-          // ── NEW: waiter screen also removes the card from Ready tab
+          // Waiter screen also removes the card from Ready tab
           broadcastToWaiter('order_served', { id: req.params.id })
         } else {
           broadcastToKitchens('order_updated', fullOrder)
@@ -414,7 +419,7 @@ router.patch(
         // Customer tracking page always gets the status update
         broadcastToKitchens('order_status_changed', fullOrder)
 
-        // ── NEW: waiter screen reacts to relevant status changes
+        // Waiter screen reacts to relevant status changes
         if (status === 'ready') {
           // Moves order from kitchen to waiter Ready tab
           broadcastToWaiter('order_status_changed', fullOrder)
@@ -474,7 +479,7 @@ router.patch(
       if (fullOrder) {
         broadcastToKitchens('payment_confirmed', fullOrder)
         broadcastToKitchens('order_status_changed', fullOrder)
-        // ── NEW: waiter screen cash tab updates payment badge
+        // Waiter screen cash tab updates payment badge
         broadcastToWaiter('payment_confirmed', fullOrder)
       }
 
@@ -514,9 +519,6 @@ router.patch(
       const order = orderResult.rows[0]
 
       if (itemName) {
-        // ── NEW: write adjustment record so waiter screen shows the
-        // price difference that needs to be settled at the table.
-        // We fetch the item's price from order_items (line total = price × qty).
         const itemRow = await pool.query(
           `SELECT oi.price, oi.quantity
            FROM   order_items oi
@@ -537,7 +539,7 @@ router.patch(
               req.params.id,
               itemName,
               lineTotal,
-              -lineTotal,           // negative = café owes the customer
+              -lineTotal,
               note || null,
             ]
           )
@@ -555,11 +557,7 @@ router.patch(
           customerEmail: order.customer_email || null,
         }
 
-        // Notify kitchen board (existing behaviour — shows UNAVAIL badge)
         broadcastToKitchens('item_flagged', flagPayload)
-
-        // ── NEW: notify waiter screen — shows in Attention tab and
-        // on the Ready order card as a price adjustment
         broadcastToWaiter('item_flagged', flagPayload)
 
         console.log(`Item flagged: "${itemName}" on order ${order.id} (${order.table_name})`)

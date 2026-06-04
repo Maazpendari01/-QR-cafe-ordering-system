@@ -3,6 +3,7 @@ import crypto from 'crypto'
 import pool from '../db/pool'
 import { validateFields, validateUUID } from '../middleware/validate'
 import { broadcastToKitchens } from './kitchen'
+import { broadcastToWaiter } from './waiter'
 
 const router = Router()
 
@@ -185,16 +186,23 @@ router.post(
           [orderId]
         )
 
-        broadcastToKitchens('payment_confirmed', {
-          order: {
-            ...order,
-            order_items: itemsResult.rows,
-            table_name: tableName,
-          },
-          message: 'Payment confirmed — order is active',
-        })
+        const kitchenPayload = {
+          ...order,
+          order_items: itemsResult.rows,
+          table_name: tableName,
+        }
 
-        // FIX: Increment coupon usage here for online payments.
+        // ── FIX: Broadcast as 'new_order' so the kitchen display
+        // actually shows the card. Cash orders use the same event
+        // in orders.ts — online orders arrive here only after
+        // payment is confirmed, so the kitchen never sees unpaid orders.
+        broadcastToKitchens('new_order', kitchenPayload)
+
+        // Notify waiter screen that online payment is confirmed
+        // so the payment badge and table grid update correctly.
+        broadcastToWaiter('payment_confirmed', kitchenPayload)
+
+        // ── FIX: Increment coupon usage here for online payments.
         // Cash orders increment on creation (orders.ts).
         // Online orders must wait until payment is confirmed —
         // incrementing on order creation would burn coupons for abandoned payments.
